@@ -1,3 +1,5 @@
+> Canonical: https://github.com/etamong-playground/audit-go
+
 # @etamong-lab/audit-go
 
 The etamong-lab cross-app **access + audit + prompt-audit logging** convention for
@@ -13,11 +15,8 @@ prompt-audit storage, and a PII mask. Backoffice (3) + per-app analyzer CronJob
 ## Install
 
 ```sh
-go get gitlab.com/etamong-lab/shared/libs/audit-go
+go get github.com/etamong-playground/audit-go
 ```
-
-Private module — consumers set `GOPRIVATE=gitlab.com/etamong-lab/*` and have git
-credentials for gitlab.com.
 
 ## What it gives you
 
@@ -38,7 +37,7 @@ credentials for gitlab.com.
 ## Minimal wiring
 
 ```go
-import "gitlab.com/etamong-lab/shared/libs/audit-go/audit"
+import "github.com/etamong-playground/audit-go/audit"
 
 func main() {
     audit.Init(audit.Config{App: "draw", Salt: os.Getenv("DRAW_HASH_SALT")})

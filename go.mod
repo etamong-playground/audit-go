@@ -1,3 +1,3 @@
-module gitlab.com/etamong-lab/shared/libs/audit-go
+module github.com/etamong-playground/audit-go
 
 go 1.23
