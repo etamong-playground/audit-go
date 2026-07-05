@@ -4,9 +4,13 @@
 //
 // Component coverage for the LLM Prompt Handling Standard:
 //
-//   - 1 access + audit log lines: RequestIDMiddleware, AccessLogMiddleware, Line
+//   - 1 access + audit log lines: AccessLogMiddleware, Line
 //   - 2 anonymized prompt storage: AnonID, MaskPII, embedded migration
 //   - 4 (partial) prompt audit metric helpers
+//
+// Request-id correlation: audit-go reads the correlation id set by
+// httpx.RequestID (from httpx-go). Install httpx.RequestID as the outermost
+// middleware; AccessLogMiddleware and ReqID will read the same id automatically.
 package audit
 
 import (
@@ -25,6 +29,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	httpx "github.com/etamong-playground/httpx-go"
 )
 
 // Config tunes app-wide identity for log records.
@@ -83,40 +89,27 @@ func ensureInit() {
 }
 
 // NewRef returns a fresh 8-hex correlation id, the standard etamong-lab ref shape.
+// Delegates to httpx.NewRef — single source of the ref format.
 func NewRef() string {
-	var b [4]byte
-	_, _ = rand.Read(b[:])
-	return hex.EncodeToString(b[:])
+	return httpx.NewRef()
 }
 
-const requestIDHeader = "X-Request-Id"
-
-type ctxKey int
-
-const reqIDKey ctxKey = 0
-
-// ReqID returns the correlation id stored by RequestIDMiddleware, or "" if the
-// middleware did not run for this request.
+// ReqID returns the request-scoped correlation id set by httpx.RequestID, or ""
+// if that middleware was not installed for this request. audit-go shares httpx-go's
+// context key so a single outermost httpx.RequestID populates the ref for access
+// lines, audit lines, and error lines alike.
 func ReqID(ctx context.Context) string {
-	if id, ok := ctx.Value(reqIDKey).(string); ok {
-		return id
-	}
-	return ""
+	return httpx.ReqID(ctx)
 }
 
-// RequestIDMiddleware mints one correlation id per request (reusing an inbound
-// X-Request-Id when present), stashes it in the context, and echoes it on the
-// response. Install outermost so AccessLogMiddleware and any audit/error lines
-// pick up the same ref.
+// RequestIDMiddleware is a thin compatibility shim around httpx.RequestID.
+// New code should install httpx.RequestID directly; this wrapper exists so apps
+// that already import audit.RequestIDMiddleware continue to work and automatically
+// populate httpx's context key.
+//
+// Deprecated: use httpx.RequestID from github.com/etamong-playground/httpx-go instead.
 func RequestIDMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id := r.Header.Get(requestIDHeader)
-		if id == "" {
-			id = NewRef()
-		}
-		w.Header().Set(requestIDHeader, id)
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), reqIDKey, id)))
-	})
+	return httpx.RequestID(next)
 }
 
 type accessLine struct {
