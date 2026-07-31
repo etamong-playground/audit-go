@@ -29,8 +29,12 @@ go get github.com/etamong-playground/audit-go
    `msg:"audit"` line.
 4. `audit.AnonID(value)` — keyed HMAC-SHA256 truncated to 16 hex; stable across
    the same deployment.
-5. `audit.MaskPII(s)` — redacts emails, phone, bearer/sk- tokens, Korean RRN
-   before persisting prompt text.
+5. `audit.MaskPII(s)` — redacts emails, phone, Korean RRN, Luhn-valid card
+   numbers, and vendor/generic secrets (Bearer/sk-/JWT, GitHub/AWS/Slack
+   tokens, Basic auth, `key=value`/`key: value` assignments) before
+   persisting prompt text. Does not mask IP addresses — access/audit lines
+   keep `ip` readable for security investigation, matching the `ip` field
+   in the access log shape below.
 6. `audit/migrations/0001_prompt_audit.sql` — embedded as `audit.Migrations`
    `embed.FS`. Apps run it through their own migration driver.
 

@@ -86,11 +86,91 @@ func TestMaskPII(t *testing.T) {
 		{"rrn 900101-1234567 ok?", "[redacted]"},
 		{"my key is sk-abcdef0123456789xyz", "[redacted]"},
 		{"Authorization: Bearer eyJ0eXAiOiJKV1QiLCJhbGciOi", "[redacted]"},
+		// bare JWT, no Bearer prefix
+		{"cookie: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c", "[redacted]"},
+		// vendor token prefixes
+		{"key is ghp_16C7e42F292c6912E7710c838347Ae178B4a", "[redacted]"},
+		{"key is gho_16C7e42F292c6912E7710c838347Ae178B4a", "[redacted]"},
+		{"key is github_pat_11AAAAAAA0aaaaaaaaaaaaAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "[redacted]"},
+		{"aws key AKIAIOSFODNN7EXAMPLE in use", "[redacted]"},
+		{"aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "[redacted]"},
+		{"Authorization: Basic dXNlcjpwYXNzd29yZA==", "[redacted]"},
+		{"slack token xoxb-fakefakefakefakefakefake here", "[redacted]"},
+		// generic secret assignments
+		{"password=hunter2", "[redacted]"},
+		{"api_key: abc123XYZ", "[redacted]"},
+		{`secret="topSecretValue"`, "[redacted]"},
+		{"passwd:hunter2222", "[redacted]"},
+		// Luhn-valid credit card, grouped and ungrouped
+		{"card 4111 1111 1111 1111 expires soon", "[redacted]"},
+		{"card 4111-1111-1111-1111 expires soon", "[redacted]"},
 	}
 	for _, c := range cases {
 		got := MaskPII(c.in)
 		if !strings.Contains(got, c.must) {
 			t.Errorf("MaskPII(%q) = %q, missing %q", c.in, got, c.must)
+		}
+	}
+}
+
+// TestMaskPII_NotMasked covers near-misses that must survive untouched —
+// masking these would shred ordinary prose/short IDs, which the fleet
+// fail-safe posture (over-mask over leak) doesn't require.
+func TestMaskPII_NotMasked(t *testing.T) {
+	cases := []string{
+		"please renew your token soon",
+		"we need a basic understanding of the algorithm",
+		"this is topsecretvalue embedded in a word",
+		"ghp_tooshort",
+		"AKIAABCDEFGHIJKLM", // 13 chars after prefix, not 16
+		"xoxb-short",
+		"room 42",
+		"order id 12345",
+		"see the api documentation",
+	}
+	for _, in := range cases {
+		if got := MaskPII(in); got != in {
+			t.Errorf("MaskPII(%q) = %q, want unchanged", in, got)
+		}
+	}
+}
+
+// TestMaskPII_Idempotent asserts re-running MaskPII on already-masked text
+// is a no-op — required since AccessLog/audit callers may double-wrap output
+// from an upstream service that already masked its own logs.
+func TestMaskPII_Idempotent(t *testing.T) {
+	inputs := []string{
+		"Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.sig",
+		"ghp_16C7e42F292c6912E7710c838347Ae178B4a",
+		"password=hunter2",
+		"Authorization: Basic dXNlcjpwYXNzd29yZA==",
+		"card 4111 1111 1111 1111",
+	}
+	for _, in := range inputs {
+		once := MaskPII(in)
+		twice := MaskPII(once)
+		if once != twice {
+			t.Errorf("MaskPII not idempotent for %q: once=%q twice=%q", in, once, twice)
+		}
+	}
+}
+
+// TestLuhnValid pins the checksum used to gate credit-card masking so
+// arbitrary same-length digit runs (invoice/order/tracking numbers) aren't
+// treated as card numbers.
+func TestLuhnValid(t *testing.T) {
+	cases := []struct {
+		digits string
+		want   bool
+	}{
+		{"4111111111111111", true},  // well-known Visa test PAN
+		{"4111111111111112", false}, // tampered last digit
+		{"4532015112830366", true},  // valid test PAN
+		{"1234567890123", false},    // arbitrary 13-digit run, not a card
+	}
+	for _, c := range cases {
+		if got := luhnValid(c.digits); got != c.want {
+			t.Errorf("luhnValid(%q) = %v, want %v", c.digits, got, c.want)
 		}
 	}
 }
