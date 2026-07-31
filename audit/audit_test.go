@@ -95,12 +95,25 @@ func TestMaskPII(t *testing.T) {
 		{"aws key AKIAIOSFODNN7EXAMPLE in use", "[redacted]"},
 		{"aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "[redacted]"},
 		{"Authorization: Basic dXNlcjpwYXNzd29yZA==", "[redacted]"},
+		{"Authorization=Basic dXNlcjpwYXNzd29yZA==", "[redacted]"},
 		{"slack token xoxb-fakefakefakefakefakefake here", "[redacted]"},
+		{"gitlab token glpat-fakefakefakefakefake here", "[redacted]"},
+		{"stripe key sk_live_fakefakefakefakefake here", "[redacted]"},
+		{"npm token npm_fakefakefakefakefakefakefakefake here", "[redacted]"},
+		{"google key AIzaFake0Fake0Fake0Fake0Fake0Fake0Fake0 here", "[redacted]"},
+		// bare 2-segment JWT (no signature at all)
+		{"raw jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0 no sig", "[redacted]"},
+		// unsigned (alg=none) JWT with an empty trailing signature segment
+		{"unsigned eyJhbGciOiJub25lIn0.eyJzdWIiOiIxMjM0NTY3ODkwIn0. done", "[redacted]"},
 		// generic secret assignments
 		{"password=hunter2", "[redacted]"},
 		{"api_key: abc123XYZ", "[redacted]"},
 		{`secret="topSecretValue"`, "[redacted]"},
 		{"passwd:hunter2222", "[redacted]"},
+		// JSON-shape assignments — closing quote sits between key and separator
+		{`{"password":"hunter2secret"}`, "[redacted]"},
+		{`{"aws_secret_access_key":"wJalrXUtnFEMIbPxRfiCYEXAMPLEKEY"}`, "[redacted]"},
+		{`"token":"eyJfoo"`, "[redacted]"},
 		// Luhn-valid credit card, grouped and ungrouped
 		{"card 4111 1111 1111 1111 expires soon", "[redacted]"},
 		{"card 4111-1111-1111-1111 expires soon", "[redacted]"},
@@ -124,9 +137,14 @@ func TestMaskPII_NotMasked(t *testing.T) {
 		"ghp_tooshort",
 		"AKIAABCDEFGHIJKLM", // 13 chars after prefix, not 16
 		"xoxb-short",
+		"glpat-tooshort",
+		"sk_live_tooshort",
+		"npm_tooshort",
+		"AIzaTooShortNotThirtyFiveCharsLong",
 		"room 42",
 		"order id 12345",
 		"see the api documentation",
+		"request_token_count: 5", // "token" isn't a standalone word here (no \b before it)
 	}
 	for _, in := range cases {
 		if got := MaskPII(in); got != in {
@@ -144,7 +162,13 @@ func TestMaskPII_Idempotent(t *testing.T) {
 		"ghp_16C7e42F292c6912E7710c838347Ae178B4a",
 		"password=hunter2",
 		"Authorization: Basic dXNlcjpwYXNzd29yZA==",
+		"Authorization=Basic dXNlcjpwYXNzd29yZA==",
 		"card 4111 1111 1111 1111",
+		`{"password":"hunter2secret"}`,
+		`{"aws_secret_access_key":"wJalrXUtnFEMIbPxRfiCYEXAMPLEKEY"}`,
+		`"token":"eyJfoo"`,
+		"raw jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0 no sig",
+		"unsigned eyJhbGciOiJub25lIn0.eyJzdWIiOiIxMjM0NTY3ODkwIn0. done",
 	}
 	for _, in := range inputs {
 		once := MaskPII(in)

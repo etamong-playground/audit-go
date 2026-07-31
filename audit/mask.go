@@ -17,40 +17,64 @@ var (
 	// reSecret matches "sk-..." style API keys and Bearer tokens.
 	reSecret = regexp.MustCompile(`(?i)\b(?:sk-[A-Za-z0-9_\-]{16,}|bearer\s+[A-Za-z0-9._\-]{16,})`)
 
-	// reJWT matches a bare JSON Web Token (three dot-separated base64url segments).
-	// Header and payload segments both decode to a JSON object, so in practice they
-	// always start with the base64 encoding of `{"` — "eyJ" — which is specific
-	// enough to anchor on without false-positiving on ordinary dotted strings.
-	// Bearer-prefixed JWTs are already caught by reSecret; this catches the rest
-	// (cookies, JSON body fields, logged headers without the scheme prefix).
-	reJWT = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b`)
+	// reJWT matches a bare JSON Web Token: two required dot-separated base64url
+	// segments (header, payload) plus an optional third (signature) — optional
+	// because alg=none / unsigned JWTs still carry a plaintext claims payload
+	// that must be masked even with an empty or absent signature segment.
+	// Header and payload segments both decode to a JSON object, so in practice
+	// they always start with the base64 encoding of `{"` — "eyJ" — which is
+	// specific enough to anchor on without false-positiving on ordinary dotted
+	// strings. Bearer-prefixed JWTs are already caught by reSecret; this
+	// catches the rest (cookies, JSON body fields, unsigned tokens, logged
+	// headers without the scheme prefix).
+	reJWT = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]*)?\b`)
 
 	// reGitHubToken matches GitHub's fixed vendor prefixes for PATs, OAuth, user-to-server,
 	// server-to-server, and refresh tokens, plus the newer fine-grained github_pat_ format.
 	reGitHubToken = regexp.MustCompile(`\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b`)
+
+	// reGitLabToken matches GitLab personal access tokens.
+	reGitLabToken = regexp.MustCompile(`\bglpat-[A-Za-z0-9_-]{20,}\b`)
+
+	// reStripeKey matches Stripe live secret/restricted keys. Stripe uses an
+	// underscore separator ("sk_live_"), distinct from the existing dash-based
+	// "sk-" pattern in reSecret, so this needs its own regex rather than an
+	// alternation there.
+	reStripeKey = regexp.MustCompile(`\b[sr]k_live_[A-Za-z0-9]{20,}\b`)
+
+	// reNpmToken matches npm automation/publish tokens.
+	reNpmToken = regexp.MustCompile(`\bnpm_[A-Za-z0-9]{30,}\b`)
+
+	// reGoogleAPIKey matches Google API keys (fixed-length: AIza + 35 chars).
+	reGoogleAPIKey = regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{35}\b`)
 
 	// reAWSKeyID matches an AWS access key ID. The AKIA prefix + fixed 16-char
 	// suffix is unique enough to a vendor credential that no length/context guard
 	// beyond word boundaries is needed.
 	reAWSKeyID = regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`)
 
-	// reBasicAuth matches "Authorization: Basic <base64>". Unlike bearer/sk-,
-	// the word "basic" alone is ordinary English, so the match requires the
-	// literal Authorization: header context to avoid masking prose ("a basic
-	// approach ..."). The header text is captured back out so the replacement
-	// keeps the same "Authorization: [redacted]" shape as the Bearer case.
-	reBasicAuth = regexp.MustCompile(`(?i)(\bauthorization:\s*)basic\s+[A-Za-z0-9+/]{8,}=*`)
+	// reBasicAuth matches "Authorization: Basic <base64>" (colon or "="
+	// separator — some loggers render headers as key=value pairs). Unlike
+	// bearer/sk-, the word "basic" alone is ordinary English, so the match
+	// requires the literal Authorization header context to avoid masking
+	// prose ("a basic approach ..."). The header text is captured back out so
+	// the replacement keeps the same "Authorization: [redacted]" shape as the
+	// Bearer case.
+	reBasicAuth = regexp.MustCompile(`(?i)(\bauthorization[:=]\s*)basic\s+[A-Za-z0-9+/]{8,}=*`)
 
 	// reSlack matches Slack's xox{b,a,p,r,s}- prefixed token formats.
 	reSlack = regexp.MustCompile(`\bxox[baprs]-[A-Za-z0-9-]{10,}\b`)
 
 	// reGenericSecret matches "<key><sep><value>" assignments for common secret
-	// key names, case-insensitive. The value must be quoted or a run of >=4
-	// non-whitespace, non-punctuation-delimiter chars — long enough to skip bare
-	// mentions ("renew your token") but this still over-masks ordinary prose that
+	// key names, case-insensitive, including JSON shape where the key is
+	// quoted and the closing quote sits between the key word and the colon
+	// (`"password":"hunter2"` — the optional `["']?` accounts for that quote).
+	// The value must be quoted or a run of >=4 non-whitespace,
+	// non-punctuation-delimiter chars — long enough to skip bare mentions
+	// ("renew your token") but this still over-masks ordinary prose that
 	// happens to use "secret"/"token" with a colon (e.g. "a secret: revealed
 	// tomorrow"). Accepted tradeoff: fleet policy is over-masking beats leaking.
-	reGenericSecret = regexp.MustCompile(`(?i)\b(?:api[_-]?key|password|passwd|secret|token|aws_secret_access_key)\b\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]{4,})`)
+	reGenericSecret = regexp.MustCompile(`(?i)\b(?:api[_-]?key|password|passwd|secret|token|aws_secret_access_key)\b["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]{4,})`)
 
 	// reCreditCardCandidate matches 13-19 digit runs (the PAN length range for
 	// major card networks), optionally grouped with spaces or dashes. Luhn
@@ -116,6 +140,10 @@ func MaskPII(s string) string {
 	s = reSecret.ReplaceAllString(s, "[redacted]")
 	s = reJWT.ReplaceAllString(s, "[redacted]")
 	s = reGitHubToken.ReplaceAllString(s, "[redacted]")
+	s = reGitLabToken.ReplaceAllString(s, "[redacted]")
+	s = reStripeKey.ReplaceAllString(s, "[redacted]")
+	s = reNpmToken.ReplaceAllString(s, "[redacted]")
+	s = reGoogleAPIKey.ReplaceAllString(s, "[redacted]")
 	s = reAWSKeyID.ReplaceAllString(s, "[redacted]")
 	s = reBasicAuth.ReplaceAllString(s, "${1}[redacted]")
 	s = reSlack.ReplaceAllString(s, "[redacted]")
