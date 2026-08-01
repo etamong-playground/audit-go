@@ -1,0 +1,41 @@
+# Cut a release tag from CI (tags are cut by CI, never pushed by hand).
+# Go modules need nothing beyond the tag — the module proxy serves it on demand.
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "semver tag to cut at main HEAD, e.g. v0.4.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # The tag is the release artifact for a Go module, so gate it on the
+      # same tests CI runs.
+      - run: go build ./... && go vet ./... && go test -race ./...
+
+      - name: Validate and cut tag
+        run: |
+          V="${{ github.event.inputs.version }}"
+          if ! echo "$V" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::not a vX.Y.Z semver: $V"; exit 1
+          fi
+          if git ls-remote --tags origin "refs/tags/$V" | grep -q .; then
+            echo "::error::tag $V already exists"; exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "$V"
+          git push origin "$V"
