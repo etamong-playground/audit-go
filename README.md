@@ -37,6 +37,97 @@ go get github.com/etamong-playground/audit-go
    in the access log shape below.
 6. `audit/migrations/0001_prompt_audit.sql` — embedded as `audit.Migrations`
    `embed.FS`. Apps run it through their own migration driver.
+7. `durable` — typed two-year action records, PostgreSQL transaction-bound
+   persistence and a retrying exporter. It is separate from `audit.Line`,
+   which remains an operational log and does not guarantee retained history.
+
+## Durable mutation audit
+
+Install `durable.Schema` through the application's migration runner before using the writer.
+It creates `audit_events` and separate `audit_delivery` state, with a trigger that enqueues each event in the same transaction.
+Application writers need insert/select access to retained events and `INSERT (service, event_id)` on `audit_delivery`, because the enqueue trigger runs with caller privileges.
+Delivery workers need read access to events, select/update on delivery state, and access to the containing schema.
+Cleanup workers need delete/select on events and access to the containing schema; cascading removal handles delivery state.
+Avoid event-update grants and user-deletion cascades.
+
+```go
+import "github.com/etamong-playground/audit-go/durable"
+
+func renameItem(ctx context.Context, db *sql.DB, itemID, newName string) error {
+    eventID, err := durable.NewID()
+    if err != nil {
+        return err
+    }
+    tx, err := db.BeginTx(ctx, nil)
+    if err != nil {
+        return err
+    }
+    defer tx.Rollback()
+    var oldName string
+    if err := tx.QueryRowContext(ctx, "SELECT name FROM items WHERE id = $1 FOR UPDATE", itemID).Scan(&oldName); err != nil {
+        return err
+    }
+    if _, err := tx.ExecContext(ctx, "UPDATE items SET name = $1 WHERE id = $2", newName, itemID); err != nil {
+        return err
+    }
+    event := durable.Event{
+        SchemaVersion: 1, ID: eventID, OperationID: eventID,
+        Service: "example", Environment: "production", OccurredAt: time.Now().UTC(),
+        Actor: durable.Actor{ID: "maintenance-job", Type: "job"},
+        Action: "item.rename", TargetType: "item", TargetID: itemID, Result: "ok",
+        Changes: []durable.Change{{Field: "name", Before: oldName, After: newName}},
+    }
+    if err := durable.Record(ctx, tx, event); err != nil {
+        return err
+    }
+    return tx.Commit()
+}
+```
+
+For pgx, pass an executor on the **active business transaction**, not a pool:
+
+```go
+err := durable.RecordWith(ctx, func(ctx context.Context, statement string, args ...any) error {
+    _, err := tx.Exec(ctx, statement, args...)
+    return err
+}, event)
+```
+
+The caller must propagate every recording error and roll back the business operation.
+Middleware that writes after a successful handler cannot provide atomicity.
+For sensitive reads, commit a separate access event before releasing protected data.
+External side effects need a committed intent and a later verified outcome with the same operation ID.
+
+Only put explicitly allowlisted, bounded fields in `Changes`.
+Tokens, passwords, raw bodies and prompt/document content must never enter this two-year record.
+`ActorID` requires a dedicated key of at least 32 bytes and an issuer/subject pair; store its key version in a user actor's `KeyID`.
+Keep that key stable across services and restarts if cross-service correlation is required.
+
+Run `durable.ExportOne(ctx, db, sender)` from an application-owned worker.
+The sender authenticates to the receiver and returns `durable.Accepted` only after central durable commit, or `durable.Expired` for an event actually past expiration.
+It must honor its context deadline of at most 10 seconds; the exporter reserves five seconds of its 15-second transaction budget for recording delivery state, including time spent acquiring a connection.
+The receiver must deduplicate stable IDs within authenticated producer identity and reject conflicting payloads.
+Transport, credentials and central query authorization belong to the consuming application; this package does not supply a collector or HTTP protocol.
+
+Failed sends retain the event and schedule exponential retry (1 to 512 seconds).
+An interrupted transaction or lost acknowledgement can resend the same event, so receiver deduplication is required.
+Exporters skip each other's locked delivery rows.
+The worker must wait on errors or empty batches rather than busy-looping, and monitor pending age/bytes and database capacity.
+
+Events expire two calendar years after UTC occurrence, clamping leap day to February 28.
+Acknowledgement never deletes retained history or extends its expiry.
+Schedule bounded `durable.PurgeExpired(ctx, db, limit)` batches daily, and apply the same expiry before serving restored data.
+Backups need a separate documented, bounded recovery window.
+Event validation limits envelopes to 64 KiB and rejects already-expired or more than five-minutes-future occurrences at recording time.
+
+Run PostgreSQL integration checks against a dedicated test database:
+
+```sh
+AUDIT_TEST_DATABASE_URL=postgres://user:password@localhost:5432/audit_test?sslmode=disable go test -race ./...
+```
+
+Tests create and remove isolated schemas; CI supplies PostgreSQL and runs these checks alongside the existing logging tests.
+pgx is used only as the test driver; the durable package itself uses the standard library.
 
 ## Minimal wiring
 
