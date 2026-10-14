@@ -17,6 +17,9 @@ func testDB(t *testing.T) *sql.DB {
 	t.Helper()
 	dsn := os.Getenv("AUDIT_TEST_DATABASE_URL")
 	if dsn == "" {
+		if os.Getenv("CI") == "true" {
+			t.Fatal("CI must provide AUDIT_TEST_DATABASE_URL")
+		}
 		t.Skip("AUDIT_TEST_DATABASE_URL is unset")
 	}
 	admin, err := sql.Open("pgx", dsn)
