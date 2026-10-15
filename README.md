@@ -118,6 +118,59 @@ Events expire two calendar years after UTC occurrence, clamping leap day to Febr
 Acknowledgement never deletes retained history or extends its expiry.
 Schedule bounded `durable.PurgeExpired(ctx, db, limit)` batches daily, and apply the same expiry before serving restored data.
 Backups need a separate documented, bounded recovery window.
+
+For a cleanup outcome that commits with deletion, use `durable.PurgeExpiredWith` on the active transaction.
+Its `CleanupSummary` contains the actual removed count and inclusive UTC occurrence/expiry ranges, with nil ranges for an empty batch.
+Only counts and time ranges are returned; expired identifiers and payloads are excluded.
+Concurrent jobs may overlap selected rows, so a zero count does not prove that no expired rows remain.
+Schedule bounded batches with a job deadline and inspect expiry lag separately.
+
+```go
+func purgeAuditBatch(ctx context.Context, db *sql.DB) (durable.Event, error) {
+    tx, err := db.BeginTx(ctx, nil)
+    if err != nil {
+        return durable.Event{}, err
+    }
+    defer tx.Rollback()
+    summary, err := durable.PurgeExpiredWith(ctx,
+        func(ctx context.Context, query string, args ...any) durable.RowScanner {
+            return tx.QueryRowContext(ctx, query, args...)
+        }, 100)
+    if err != nil || summary.Removed == 0 {
+        return durable.Event{}, err
+    }
+    id, err := durable.NewID()
+    if err != nil {
+        return durable.Event{}, err
+    }
+    event := durable.Event{
+        SchemaVersion: 1, ID: id, OperationID: id,
+        Service: "example", Environment: "production", OccurredAt: time.Now().UTC(),
+        Actor: durable.Actor{ID: "retention-worker", Type: "job"},
+        Action: "audit.retention.purge", TargetType: "audit-history",
+        TargetID: "expired-records", Result: "ok",
+        Changes: []durable.Change{
+            {Field: "removed", After: strconv.FormatInt(summary.Removed, 10)},
+            {Field: "occurred_from", After: summary.OccurredFrom.Format(time.RFC3339Nano)},
+            {Field: "occurred_to", After: summary.OccurredTo.Format(time.RFC3339Nano)},
+            {Field: "expired_from", After: summary.ExpiredFrom.Format(time.RFC3339Nano)},
+            {Field: "expired_to", After: summary.ExpiredTo.Format(time.RFC3339Nano)},
+        },
+    }
+    if err := durable.Record(ctx, tx, event); err != nil {
+        return durable.Event{}, err
+    }
+    return event, tx.Commit()
+}
+```
+
+The snippet uses `context`, `database/sql`, `strconv`, `time` and `durable` imports.
+Resolve the service/environment and job identity from trusted application configuration.
+The application owns commit-outcome confirmation.
+The snippet returns the outcome event even if commit acknowledgement fails; confirm its exact retained content independently before retrying, since a commit error does not prove rollback.
+To record the outcome, the cleanup role additionally needs the writer's event and enqueue insert grants; it still needs no event-update grant.
+For pgx, the callback returns `tx.QueryRow(ctx, query, args...)` instead.
+
 Event validation limits envelopes to 64 KiB and rejects already-expired or more than five-minutes-future occurrences at recording time.
 
 Run PostgreSQL integration checks against a dedicated test database:
