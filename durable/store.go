@@ -147,17 +147,14 @@ func retryDelay(attempts int) time.Duration {
 	return time.Duration(1<<attempts) * time.Second
 }
 
-// PurgeExpired removes expired payloads and cascades their delivery state.
-// Applications schedule bounded batches; unexpired events are never removed.
+// PurgeExpired removes at most limit expired events and cascades their delivery state.
+// Use PurgeExpiredWith on the active transaction to record a cleanup outcome atomically.
 func PurgeExpired(ctx context.Context, db *sql.DB, limit int) (int64, error) {
-	if db == nil || limit < 1 || limit > 10000 {
-		return 0, errors.New("audit cleanup requires database and limit in 1..10000")
+	if db == nil {
+		return 0, errors.New("audit cleanup requires a database")
 	}
-	result, err := db.ExecContext(ctx, `DELETE FROM audit_events WHERE (service, event_id) IN (
-		SELECT service, event_id FROM audit_events WHERE expires_at <= CURRENT_TIMESTAMP
-		ORDER BY expires_at LIMIT $1)`, limit)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
+	summary, err := PurgeExpiredWith(ctx, func(ctx context.Context, statement string, args ...any) RowScanner {
+		return db.QueryRowContext(ctx, statement, args...)
+	}, limit)
+	return summary.Removed, err
 }
