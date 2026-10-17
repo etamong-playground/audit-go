@@ -45,7 +45,10 @@ go get github.com/etamong-playground/audit-go
 
 Install `durable.Schema` through the application's migration runner before using the writer.
 It creates `audit_events` and separate `audit_delivery` state, with a trigger that enqueues each event in the same transaction.
-Application writers need insert/select access to retained events and `INSERT (service, event_id)` on `audit_delivery`, because the enqueue trigger runs with caller privileges.
+The enqueue trigger targets `audit_delivery` in the event table's schema, regardless of temporary tables or the caller's search path.
+For an existing installation, apply the updated `audit_enqueue_event` function definition in a new forward migration; do not edit an already-applied checksummed migration.
+A dependency update alone does not replace a function installed from a copied migration.
+Application writers need `USAGE` on the containing schema, insert/select access to retained events and `INSERT (service, event_id)` on `audit_delivery`, because the enqueue trigger runs with caller privileges.
 Delivery workers need read access to events, select/update on delivery state, and access to the containing schema.
 Cleanup workers need delete/select on events and access to the containing schema; cascading removal handles delivery state.
 Avoid event-update grants and user-deletion cascades.

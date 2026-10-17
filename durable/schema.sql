@@ -25,7 +25,8 @@ CREATE INDEX IF NOT EXISTS audit_delivery_pending ON audit_delivery (next_attemp
 
 CREATE OR REPLACE FUNCTION audit_enqueue_event() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-    INSERT INTO audit_delivery (service, event_id) VALUES (NEW.service, NEW.event_id);
+    EXECUTE format('INSERT INTO %I.audit_delivery (service, event_id) VALUES ($1, $2)', TG_TABLE_SCHEMA)
+        USING NEW.service, NEW.event_id;
     RETURN NEW;
 END;
 $$;
