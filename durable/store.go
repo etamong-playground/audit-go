@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"time"
 )
 
@@ -80,15 +79,16 @@ func ExportOne(ctx context.Context, db *sql.DB, send Sender) (bool, error) {
 		return false, err
 	}
 	defer tx.Rollback()
-	var service, id string
+	var service, id, contentHash string
+	var occurredAt, expiresAt time.Time
 	var data []byte
 	var attempts int
-	err = tx.QueryRowContext(ctx, `SELECT e.service, e.event_id, e.payload, d.attempts
+	err = tx.QueryRowContext(ctx, `SELECT e.service, e.event_id, e.payload, d.attempts, e.content_hash, e.occurred_at, e.expires_at
 		FROM audit_delivery d JOIN audit_events e USING (service, event_id)
 		WHERE d.acknowledged_at IS NULL AND d.next_attempt_at <= CURRENT_TIMESTAMP
 		AND e.expires_at > CURRENT_TIMESTAMP
 		ORDER BY e.occurred_at, e.event_id
-		LIMIT 1 FOR UPDATE OF d SKIP LOCKED`).Scan(&service, &id, &data, &attempts)
+		LIMIT 1 FOR UPDATE OF d SKIP LOCKED`).Scan(&service, &id, &data, &attempts, &contentHash, &occurredAt, &expiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -96,23 +96,31 @@ func ExportOne(ctx context.Context, db *sql.DB, send Sender) (bool, error) {
 		return false, err
 	}
 	var event Event
-	if err := json.Unmarshal(data, &event); err != nil {
-		return true, fmt.Errorf("invalid stored audit event: %w", err)
-	}
-	deadline, _ := ctx.Deadline()
-	sendDeadline := deadline.Add(-5 * time.Second)
-	if latest := time.Now().Add(10 * time.Second); latest.Before(sendDeadline) {
-		sendDeadline = latest
-	}
-	sendCtx, cancelSend := context.WithDeadline(ctx, sendDeadline)
 	var disposition Disposition
 	var sendErr error
-	if sendCtx.Err() != nil {
-		sendErr = sendCtx.Err()
-	} else {
-		disposition, sendErr = send(sendCtx, event)
+	valid := json.Unmarshal(data, &event) == nil && event.Validate() == nil && event.ID == id && event.Service == service
+	if valid {
+		canonical, _ := json.Marshal(event)
+		hash := sha256.Sum256(canonical)
+		valid = hex.EncodeToString(hash[:]) == contentHash && event.OccurredAt.Truncate(time.Microsecond).Equal(occurredAt) && event.ExpiresAt().Truncate(time.Microsecond).Equal(expiresAt)
 	}
-	cancelSend()
+	if !valid {
+		sendErr = errors.New("invalid stored audit event")
+	} else {
+		deadline, _ := ctx.Deadline()
+		sendDeadline := deadline.Add(-5 * time.Second)
+		if latest := time.Now().Add(10 * time.Second); latest.Before(sendDeadline) {
+			sendDeadline = latest
+		}
+		sendCtx, cancelSend := context.WithDeadline(ctx, sendDeadline)
+		if sendCtx.Err() != nil {
+			sendErr = sendCtx.Err()
+		} else {
+			disposition, sendErr = send(sendCtx, event)
+		}
+		cancelSend()
+	}
+
 	if sendErr == nil && disposition != Accepted && disposition != Expired {
 		sendErr = errors.New("invalid audit delivery acknowledgement")
 	}

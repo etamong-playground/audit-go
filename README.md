@@ -109,7 +109,9 @@ It must honor its context deadline of at most 10 seconds; the exporter reserves 
 The receiver must deduplicate stable IDs within authenticated producer identity and reject conflicting payloads.
 Transport, credentials and central query authorization belong to the consuming application; this package does not supply a collector or HTTP protocol.
 
-Failed sends retain the event and schedule exponential retry (1 to 512 seconds).
+Failed sends and malformed stored payloads retain the event and schedule exponential retry (1 to 512 seconds).
+Decoded events must satisfy the event contract and match their stored service, event ID, occurrence, expiry and canonical content hash.
+Malformed events are not sent; their delivery failure leaves the original content and expiration intact for repair while eligible later events can progress.
 An interrupted transaction or lost acknowledgement can resend the same event, so receiver deduplication is required.
 Exporters skip each other's locked delivery rows.
 The worker must wait on errors or empty batches rather than busy-looping, and monitor pending age/bytes and database capacity.
