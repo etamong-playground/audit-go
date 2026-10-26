@@ -41,6 +41,37 @@ go get github.com/etamong-playground/audit-go
    persistence and a retrying exporter. It is separate from `audit.Line`,
    which remains an operational log and does not guarantee retained history.
 
+## Minimize access-log fields
+
+`AccessLogMiddlewareWithOptions` selects retained values for one middleware instance.
+Nil callbacks keep the existing access logger's behavior; returning an empty string does not fall back to a raw value.
+For example, this configuration logs route templates while excluding client IP and forwarded identity values:
+
+```go
+access := audit.AccessLogMiddlewareWithOptions(mux, audit.AccessLogOptions{
+    Route: func(r *http.Request) string {
+        if r.Pattern != "" {
+            return r.Pattern
+        }
+        return "unmatched"
+    },
+    ClientIP: func(*http.Request) string { return "" },
+    User:     func(*http.Request) string { return "" },
+})
+withID := httpx.RequestID(access)
+handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+    request := r.Clone(r.Context())
+    request.Header.Del(httpx.RequestIDHeader)
+    withID.ServeHTTP(w, request)
+})
+```
+
+The outer handler discards untrusted incoming request IDs before `httpx.RequestID` generates a fresh correlation ID.
+Use the same ID through `httpx.ReqID` for error and audit records; field callbacks do not sanitize correlation IDs or errors emitted by other components.
+The IP field remains present as an empty string, and the empty user field is omitted.
+Callbacks run after the downstream handler, must be concurrency-safe, and receive the request without changing its URL or identity headers.
+The existing `AccessLogMiddleware` and `/healthz` exclusion remain available.
+
 ## Durable mutation audit
 
 Install `durable.Schema` through the application's migration runner before using the writer.

@@ -138,6 +138,22 @@ func (w *statusCapture) WriteHeader(code int) {
 // `/healthz` to keep Loki clean. Uses route template (`r.Pattern` on Go 1.22+)
 // when available to keep cardinality finite.
 func AccessLogMiddleware(next http.Handler) http.Handler {
+	return AccessLogMiddlewareWithOptions(next, AccessLogOptions{})
+}
+
+// AccessLogOptions selects access-log values without changing the request passed to handlers.
+// Nil callbacks retain the default behavior; an empty callback result stays empty.
+// Callbacks must be safe for concurrent requests and return values suitable for retention.
+// Request correlation is controlled separately by the installed request-ID middleware.
+type AccessLogOptions struct {
+	Route    func(*http.Request) string
+	ClientIP func(*http.Request) string
+	User     func(*http.Request) string
+}
+
+// AccessLogMiddlewareWithOptions applies per-instance field selection and skips /healthz.
+// Route runs after the handler so it can use the selected route template.
+func AccessLogMiddlewareWithOptions(next http.Handler, options AccessLogOptions) http.Handler {
 	ensureInit()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/healthz" {
@@ -151,6 +167,16 @@ func AccessLogMiddleware(next http.Handler) http.Handler {
 		if r.Pattern != "" {
 			path = r.Pattern
 		}
+		if options.Route != nil {
+			path = options.Route(r)
+		}
+		ip, user := ClientIP(r), AuthUser(r)
+		if options.ClientIP != nil {
+			ip = options.ClientIP(r)
+		}
+		if options.User != nil {
+			user = options.User(r)
+		}
 		line := accessLine{
 			Time:     start.UTC().Format(time.RFC3339),
 			Kind:     "access",
@@ -159,8 +185,8 @@ func AccessLogMiddleware(next http.Handler) http.Handler {
 			Path:     path,
 			Status:   sc.status,
 			Duration: time.Since(start).Milliseconds(),
-			IP:       ClientIP(r),
-			User:     AuthUser(r),
+			IP:       ip,
+			User:     user,
 		}
 		b, err := json.Marshal(line)
 		if err != nil {
