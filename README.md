@@ -209,6 +209,8 @@ For pgx, the callback returns `tx.QueryRow(ctx, query, args...)` instead.
 
 Event validation limits envelopes to 64 KiB and rejects already-expired or more than five-minutes-future occurrences at recording time.
 
+Go 1.25 or newer is required.
+
 Run PostgreSQL integration checks against a dedicated test database:
 
 ```sh
